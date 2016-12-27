@@ -1,54 +1,96 @@
 import json
-import urllib.request
-import bs4
-from datetime import date, timedelta
-from LineupDataGenerator import GetDataForGame
-import sys
+import random
+from ast import literal_eval
 
+# http://www.sloansportsconference.com/wp-content/uploads/2015/09/joeSillSloanSportsPaperWithLogo.pdf
 
-# consider regressing against diversion from BPM, and also diversion from 0/replacement level which is like -2.7
+def GetOffPrior(name):
+    return 0
 
-#data = GetDataForGame("201612030GSW")
-#sys.exit()
+def GetDefPrior(name):
+    return 0
 
-#f = open("201611070GSW.txt", 'r')
-#data2 = json.load(f)
-#f.close()
-
-f = open("badgames.txt", 'r')
-badgames = f.readlines()
-for game in badgames:
-    game = game.replace("\n", '')
-    print(game)
-    GetDataForGame(game)
-    print("\n")
-sys.exit()
-
-# iterate through timespan (use play index to get specific timespan priors?)
-# iterate through all games in a day
-# consider days with no games
-
-#startDate = date(2016, 10, 25)
-startDate = date(2016, 11, 1)
-endDate = date(2016, 12, 24)
-
-baseDateUrl = "http://www.basketball-reference.com/boxscores/index.cgi?month={}&day={}&year={}"
-
-date = startDate
-while date < endDate:
-    dateUrl = baseDateUrl.format(date.month, date.day, date.year)
-    print(dateUrl)
-    request = urllib.request.Request(dateUrl)#
-    result = urllib.request.urlopen(request)#
-    resulttext = result.read()#
-    soup = bs4.BeautifulSoup(resulttext, "html5lib") # make this a shared function
-    links = soup.find_all(class_="right gamelink")
-    games = [link.a['href'][11:-5] for link in links]
-    for game in games:
-        try:
-            GetDataForGame(game)
-            print("Wrote data for " + game)
-        except:
-            print("Failed to write data for " + game)
+def OffVal(name, offValues):
+    try:
+        return offValues[name]
+    except:
+        offValues[name] = GetOffPrior(name)
+        return offValues[name]
     
-    date += timedelta(1)
+def DefVal(name, defValues):
+    try:
+        return defValues[name]
+    except:
+        defValues[name] = GetDefPrior(name)
+        return defValues[name]
+
+# Return points per possession scored by both teams
+def GetPrediction(homePlayers, awayPlayers, offValues, defValues, homeCourtAdvantageOff, homeCourtAdvantageDef):
+    
+    homePoints = sum([OffVal(player, offValues) for player in homePlayers]) - sum([DefVal(player, defValues) for player in awayPlayers])
+    homePoints += homeCourtAdvantageOff
+    awayPoints = sum([OffVal(player, offValues) for player in awayPlayers]) - sum([DefVal(player, defValues) for player in homePlayers])
+    awayPoints -= homeCourtAdvantageDef
+
+    return (homePoints, awayPoints)
+
+with open("lineupDataFrom2016-10-25to2016-12-24.txt") as f:
+    lineupData = json.load(f)
+
+offValues = dict()
+defValues = dict()
+
+# How many more points offense scores at home
+homeCourtAdvantageOff = 0
+# How many fewer points scored by the away team (positive number which is subtracted)
+homeCourtAdvantageDef = 0
+
+# Step size of gradient descent
+stepSize = 0.01
+# Regularization term
+lambdaVal = 0.01
+
+
+epoch = 1
+
+while epoch < 20:
+    totalError = 0
+    for key in lineupData:
+        homePos, homePoints, awayPos, awayPoints = lineupData[key]
+        players = literal_eval(key)
+        homePlayers = players[0]
+        awayPlayers = players[1]
+
+        homePrediction, awayPrediction = GetPrediction(homePlayers, awayPlayers, offValues, defValues, homeCourtAdvantageOff, homeCourtAdvantageDef)
+
+        homePointsError = homePrediction * homePos - homePoints
+        awayPointsError = awayPrediction * awayPos - awayPoints
+
+        totalError += homePointsError**2 + awayPointsError**2
+
+        #print("Home court advantage", awayPointsError, homeCourtAdvantageDef)
+        homeCourtAdvantageOff -= stepSize * homePos * (homePointsError + lambdaVal * homeCourtAdvantageOff)
+        homeCourtAdvantageDef += stepSize * awayPos * (awayPointsError - lambdaVal * homeCourtAdvantageDef)
+        #print("Home court advantage after", homeCourtAdvantageDef)
+        for player in homePlayers:
+            print("off value", homePointsError, offValues[player])
+            offValues[player] -= stepSize * homePos * (homePointsError + lambdaVal * offValues[player])
+            print("subsequently:", offValues[player])
+            #print("def value", awayPointsError, defValues[player])
+            defValues[player] += stepSize * homePos * (awayPointsError - lambdaVal * defValues[player])
+            #print("subsequently on defense:", defValues[player])
+        for player in awayPlayers:
+            offValues[player] -= stepSize * awayPos * (awayPointsError + lambdaVal * offValues[player]) 
+            defValues[player] += stepSize * awayPos * (homePointsError - lambdaVal * defValues[player])
+
+    print("Finished with epoch {}, total error {}".format(totalError, epoch))
+    epoch += 1
+        
+
+
+
+
+
+
+
+
